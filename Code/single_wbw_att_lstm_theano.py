@@ -49,7 +49,7 @@ def ortho_weight(ndim):
     """
     W = numpy.random.randn(ndim, ndim)
     u, _, _ = numpy.linalg.svd(W)
-    return u.astype('float64')
+    return u.astype('float32')
 
 
 def init_weight(n, d, options):
@@ -90,7 +90,13 @@ def init_params(options):
     ## use the same initialization as BOW
     params['w_emb'] = ((numpy.random.rand(n_words, n_emb) * 2 - 1) * 0.5).astype(floatX)
 
+    params = init_fflayer(params, n_image_feat, n_dim, options,
+                          prefix='W_y')
     params = init_fflayer(params, n_dim, n_dim, options,
+                          prefix='W_h')
+    params = init_fflayer(params, n_dim, 1, options,
+                          prefix='W_M')
+    params = init_fflayer(params, n_image_feat, n_dim, options,
                           prefix='W_p')
     params = init_fflayer(params, n_dim, n_dim, options,
                           prefix='W_x')
@@ -126,9 +132,6 @@ def init_params(options):
     # lstm layer
     params = init_lstm_layer(params, n_emb, n_dim, options, prefix='sent_lstm')
 
-    # wbw attention layer
-    params = init_wbw_att_layer(params, n_image_feat, n_dim, options)
-
     return params
 
 def init_shared_params(params):
@@ -145,7 +148,7 @@ def tanh(x):
     return T.tanh(x)
 
 def relu(x):
-    return T.maximum(x, np.float64(0.))
+    return T.maximum(x, np.float32(0.))
 
 def linear(x):
     return x
@@ -154,7 +157,7 @@ def init_fflayer(params, nin, nout, options, prefix='ff'):
     ''' initialize ff layer
     '''
     params[prefix + '_w'] = init_weight(nin, nout, options)
-    params[prefix + '_b'] = np.zeros(nout, dtype='float64')
+    params[prefix + '_b'] = np.zeros(nout, dtype='float32')
     return params
 
 def fflayer(shared_params, x, options, prefix='ff', act_func='tanh', nobias=False):
@@ -174,19 +177,9 @@ def dropout_layer(x, dropout, trng, drop_ratio=0.5):
                                          p = 1 - drop_ratio,
                                          n = 1,
                                          dtype = x.dtype) \
-                       / (numpy.float64(1.0) - drop_ratio)),
+                       / (numpy.float32(1.0) - drop_ratio)),
                       x)
     return x_drop
-
-def init_wbw_att_layer(params, nin, ndim, options, prefix='wbw_attention'):
-
-    params[prefix + '_w_y'] = init_weight(nin, ndim, options)
-    params[prefix + '_w_h'] = init_weight(ndim, ndim, options)
-    params[prefix + '_w_r'] = init_weight(ndim, ndim, options)
-    params[prefix + '_w_alpha'] = init_weight(ndim, 1, options)
-    params[prefix + '_w_t'] = init_weight(ndim, ndim, options)
-
-    return params
 
 def init_lstm_layer(params, nin, ndim, options, prefix='lstm'):
     ''' initializt lstm layer
@@ -201,41 +194,10 @@ def init_lstm_layer(params, nin, ndim, options, prefix='lstm'):
                                                  axis=1)
     else:
         params[prefix + '_w_h'] = init_weight(ndim, 4 * ndim, options)
-    params[prefix + '_b_h'] = np.zeros(4 * ndim, dtype='float64')
+    params[prefix + '_b_h'] = np.zeros(4 * ndim, dtype='float32')
     # set forget bias to be positive
-    params[prefix + '_b_h'][ndim : 2*ndim] = np.float64(options.get('forget_bias', 0))
+    params[prefix + '_b_h'][ndim : 2*ndim] = np.float32(options.get('forget_bias', 0))
     return params
-
-def wbw_attention_layer(shared_params, image, question, mask, r_0, options, prefix='wbw_attention'):
-
-    n_dim = options['n_dim']
-    n_image_feat = options['n_image_feat']
-
-    wbw_w_y = shared_params[prefix + '_w_y']
-    wbw_w_h = shared_params[prefix + '_w_h']
-    wbw_w_r = shared_params[prefix + '_w_r']
-    wbw_w_alpha = shared_params[prefix + '_w_alpha']
-    wbw_w_t = shared_params[prefix + '_w_t']
-
-    def recurrent(h_t, mask_t, r_tm1, Y):
-
-        tempp = T.dot(h_t, wbw_w_h) + T.dot(r_tm1, wbw_w_r)
-        Mt = tanh(T.dot(Y, wbw_w_y) + tempp[:,None,:])
-        WMt = T.dot(Mt, wbw_w_alpha)
-        alpha_t = T.nnet.softmax(WMt[:, :, 0])
-        r_t = (alpha_t[:, :, None] * Y).sum(axis=1) + tanh(T.dot(r_tm1, wbw_w_t))
-
-        r_t = mask_t[:, None] * r_t + (numpy.float64(1.0) - mask_t[:, None]) * r_tm1
-
-        return r_t
-
-    [r], updates = theano.scan(fn = recurrent,
-                                  sequences = [question, mask],
-                                  outputs_info = [r_0[:question.shape[1]]],
-                                  n_steps = question.shape[0],
-                                  non_sequences = image)
-    return r
-
 
 def lstm_layer(shared_params, x, mask, h_0, c_0, options, prefix='lstm'):
     ''' lstm layer:
@@ -269,9 +231,9 @@ def lstm_layer(shared_params, x, mask, h_0, c_0, options, prefix='lstm'):
 
         # if mask = 0, then keep the previous c and h
         h_t = mask_t[:, None] * h_t + \
-              (numpy.float64(1.0) - mask_t[:, None]) * h_tm1
+              (numpy.float32(1.0) - mask_t[:, None]) * h_tm1
         c_t = mask_t[:, None] * c_t + \
-              (numpy.float64(1.0) - mask_t[:, None]) * c_tm1
+              (numpy.float32(1.0) - mask_t[:, None]) * c_tm1
 
         return h_t, c_t
 
@@ -346,9 +308,9 @@ def lstm_append_layer(shared_params, x, mask, h_0, c_0, options, prefix='lstm'):
 
         # if mask = 0, then keep the previous c and h
         h_t = mask_t[:, None] * h_t + \
-              (numpy.float64(1.0) - mask_t[:, None]) * h_0
+              (numpy.float32(1.0) - mask_t[:, None]) * h_0
         c_t = mask_t[:, None] * c_t + \
-              (numpy.float64(1.0) - mask_t[:, None]) * c_0
+              (numpy.float32(1.0) - mask_t[:, None]) * c_0
 
         return h_t, c_t
 
@@ -380,7 +342,7 @@ def build_model(shared_params, options):
 
     w_emb = shared_params['w_emb']
 
-    dropout = theano.shared(numpy.float64(0.))
+    dropout = theano.shared(numpy.float32(0.))
     image_feat = T.ftensor3('image_feat')
     # T x batch_size
     input_idx = T.imatrix('input_idx')
@@ -389,15 +351,15 @@ def build_model(shared_params, options):
     label = T.ivector('label')
 
     empty_word = theano.shared(value=np.zeros((1, options['n_emb']),
-                                              dtype='float64'),
+                                              dtype='float32'),
                                name='empty_word')
     w_emb_extend = T.concatenate([empty_word, shared_params['w_emb']],
                                  axis=0)
     input_emb = w_emb_extend[input_idx]
 
     # get the transformed image feature
-    h_0 = theano.shared(numpy.zeros((batch_size, n_dim), dtype='float64'))
-    c_0 = theano.shared(numpy.zeros((batch_size, n_dim), dtype='float64'))
+    h_0 = theano.shared(numpy.zeros((batch_size, n_dim), dtype='float32'))
+    c_0 = theano.shared(numpy.zeros((batch_size, n_dim), dtype='float32'))
 
     if options['sent_drop']:
         input_emb = dropout_layer(input_emb, dropout, trng, drop_ratio)
@@ -405,27 +367,78 @@ def build_model(shared_params, options):
     h_encode, c_encode = lstm_layer(shared_params, input_emb, input_mask,
                                     h_0, c_0, options, prefix='sent_lstm')
     # pick the last one as encoder
+    h_N = h_encode[-1] 
+    Y = image_feat
 
-    r_0 = theano.shared(numpy.zeros((batch_size, n_dim), dtype='float64'))
-    r = lstm_layer(shared_params, h_encode, input_mask, h_0, r_0, options, prefix='sent_lstm')
 
-    r = r[-1]
+    WY = fflayer(shared_params, Y, options,
+                              prefix='W_y',
+                              nobias=True,
+                              act_func='linear')
+
+    Wh = fflayer(shared_params, h_N, options,
+                                   prefix='W_h',
+                                   act_func='linear') 
+
+    M = tanh(WY + Wh[:, None, :])
+
+    if options['use_attention_drop']:
+        M = dropout_layer(M, dropout, trng, drop_ratio)
+
+    WM = fflayer(shared_params,
+                        M, options,
+                        prefix='W_M',
+                        act_func='linear')
+
+    alpha = T.nnet.softmax(WM[:, :, 0])
+    r = (alpha[:, :, None] * Y).sum(axis=1)
 
     Wpr = fflayer(shared_params,
-                        h_encode , options,
+                        r, options,
                         prefix='W_p',
                         nobias=True,
                         act_func='linear')
 
     Wxh = fflayer(shared_params,
-                        h_encode[-1], options,
+                        h_N, options,
                         prefix='W_x',
                         nobias=True,
                         act_func='linear')
 
-    ws = T.nnet.softmax(Wpr)
-
     h_star = tanh(Wpr + Wxh)
+
+    # # second layer attention model
+    # image_feat_attention_2 = fflayer(shared_params, image_feat, options,
+    #                                  prefix='image_att_mlp_2',
+    #                                  nobias=True,
+    #                                  act_func=options.get('image_att_mlp_act',
+    #                                                       'linear'))
+
+    # h_encode_attention_2 = fflayer(shared_params, combined_hidden_1, options,
+    #                                prefix='sent_att_mlp_2',
+    #                                act_func=options.get('sent_att_mlp_act',
+    #                                                     'linear'))
+
+    # combined_feat_attention_2 = tanh(image_feat_attention_2 + h_encode_attention_2[:, None, :])
+
+    # if options['use_attention_drop']:
+    #     combined_feat_attention_2 = dropout_layer(combined_feat_attention_2,
+    #                                               dropout, trng, drop_ratio)
+
+    # combined_feat_attention_2 = fflayer(shared_params,
+    #                                     combined_feat_attention_2, options,
+    #                                     prefix='combined_att_mlp_2',
+    #                                     act_func=options.get(
+    #                                         'combined_att_mlp_act', 'linear'))
+
+    # prob_attention_2 = T.nnet.softmax(combined_feat_attention_2[:, :, 0])
+
+    # image_feat_ave_2 = (prob_attention_2[:, :, None] * image_feat_down).sum(axis=1)
+
+    # if options.get('use_final_image_feat_only', False):
+    #     combined_hidden = image_feat_ave_2 + h_encode
+    # else:
+    #     combined_hidden = image_feat_ave_2 + combined_hidden_1
 
     if options.get('final_dropout', False):
         h_star = dropout_layer(h_star, dropout, trng,

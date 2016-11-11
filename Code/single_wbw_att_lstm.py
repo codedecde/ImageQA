@@ -19,7 +19,7 @@ from data_processing_vqa import *
 options = OrderedDict()
 # data related
 print "FALGG: ",  theano.config.gcc.cxxflags
-options['data_path'] = 'HPCData/'
+options['data_path'] = '../../../../scratch/DLProjData/'
 options['feature_file'] = 'trainval_feat.h5'
 options['expt_folder'] = '/home/ee/btech/ee1130798/DL/Proj/Models'
 options['model_name'] = 'imageqa'
@@ -62,7 +62,7 @@ options['forget_bias'] = numpy.float32(1.0)
 # learning parameters
 options['optimization'] = 'sgd' # choices
 options['batch_size'] = 100
-options['lr'] = numpy.float32(0.05)
+options['lr'] = numpy.float32(0.1)
 options['w_emb_lr'] = numpy.float32(80)
 options['momentum'] = numpy.float32(0.9)
 options['gamma'] = 1
@@ -78,7 +78,7 @@ options['grad_clip'] = numpy.float32(0.1)
 # log params
 options['disp_interval'] = 10
 options['eval_interval'] = 1000
-options['save_interval'] = 500
+options['save_interval'] = 5000
 
 def get_lr(options, curr_epoch):
     if options['optimization'] == 'sgd':
@@ -94,8 +94,8 @@ def train(options):
     logger.info(options)
     logger.info('start training')
 
-    # data_provision_att_vqa = DataProvisionAttVqa(options['data_path'],
-    #                                              options['feature_file'])
+    data_provision_att_vqa = DataProvisionAttVqa(options['data_path'],
+                                                 options['feature_file'])
 
     batch_size = options['batch_size']
     max_epochs = options['max_epochs']
