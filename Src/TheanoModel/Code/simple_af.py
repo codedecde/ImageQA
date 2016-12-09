@@ -144,7 +144,6 @@ def train(options):
                 shared_to_cpu(shared_params, best_param)
             logger.info('validation cost: %f accu: %f' %(ave_val_cost, ave_val_accu))
             logger.info('Paper ACCURACY : %f' %(float(my_count)/val_count))
-            sys.exit(0)
 
         dropout.set_value(numpy.float32(1.))
         if options['sample_answer']:
