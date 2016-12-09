@@ -112,6 +112,12 @@ def init_params(options):
     params = init_lstm_layer(params, n_emb, n_dim, options, prefix='sent_lstm')
     # wbw attention layer
     params = init_wbw_att_layer(params, n_dim, n_dim, options)
+
+    # Co Attention Layer
+    params['CO_w_r'] = init_weight(n_dim,n_dim,options)
+    params['CO_w_h'] = init_weight(n_dim,n_dim,options)
+    params['CO_w_m'] = init_weight(n_dim,1,options)
+
     return params
 
 def init_shared_params(params):
@@ -411,7 +417,25 @@ def build_model(shared_params, options):
     # r: T x batch_size x n_dim , alpha : T x batch_size x num_regions
     r = r[-1]
     
-    h_star = T.tanh( T.dot(r, shared_params['W_p_w']) + T.dot(h_from_lstm[-1], shared_params['W_x_w'] ) )
+    ## Geting Attention weighted representation of the Question
+    # Question : h_from_lstm -> T, BatchSize, n_dim
+    # Image Rep : r ->  BatchSize, n_dim
+
+    CO_W_r = shared_params['CO_w_r'] # n_dim x n_dim
+    CO_W_h = shared_params['CO_w_h'] # n_dim x n_dim
+    CO_W_m = shared_params['CO_w_m'] # n_dim x n_dim
+
+    _CO_Wr = T.dot(r, CO_W_r) # bt_sz x n_dim
+    _CO_Wh = T.dot(h_from_lstm, CO_W_h) # T x bt_sz x n_dim
+    _CO_M = tanh(_CO_Wh + _CO_Wr[None,:,:]) # T x bt_sz x n_dim        
+    
+    _CO_WM = T.dot(_CO_M, CO_W_m).flatten(2).T # bt_sz x T
+    _CO_alpha = T.nnet.softmax(_CO_WM) # bt_sz x T
+    _CO_alpha = _CO_alpha.dimshuffle((0,'x',1)) # bt_sz x 1 x T
+    _CO_H = T.batched_dot(_CO_alpha, h_from_lstm)[:,0,:] # bt_sz x n_dim
+
+    ## Final Dense
+    h_star = T.tanh( T.dot(r, shared_params['W_p_w']) + T.dot(_CO_H, shared_params['W_x_w'] ) )
     combined_hidden = fflayer(shared_params, h_star, options,
                                 prefix='scale_to_softmax',
                                 act_func='linear')
