@@ -395,45 +395,29 @@ def build_model(shared_params, options):
                                name='empty_word')
     w_emb_extend = T.concatenate([empty_word, shared_params['w_emb']],
                                  axis=0)
-    input_emb = w_emb_extend[input_idx]
-
-    # get the transformed image feature
-    h_0 = theano.shared(numpy.zeros((batch_size, n_dim), dtype='float32'))
-    c_0 = theano.shared(numpy.zeros((batch_size, n_dim), dtype='float32'))
-
-    if options['sent_drop']:
-        input_emb = dropout_layer(input_emb, dropout, trng, drop_ratio)
-
-    h_from_lstm, c_encode = lstm_layer(shared_params, input_emb, input_mask,
-                                    h_0, c_0, options, prefix='sent_lstm')
-    # pick the last one as encoder
-    
+    input_emb = w_emb_extend[input_idx] # T x bt_sz x n_dim
     Y = fflayer(shared_params, image_feat, options,
                               prefix='image_mlp',
                               act_func=options.get('image_mlp_act',
-                                                   'tanh'))
-    r_0 = theano.shared(numpy.zeros((batch_size, n_dim), dtype='float32'))
-    r, alpha = wbw_attention_layer(shared_params, Y, h_from_lstm, input_mask, r_0, options,return_final = False)
-    # r: T x batch_size x n_dim , alpha : T x batch_size x num_regions
-    r = r[-1]
+                                                   'tanh')) # bt_sz x num_regions x n_dim
+    Fb = fflayer(shared_params, Y, options, 
+                              prefix='F_func', 
+                              act_func='relu') # bt x num_region x n_dim
+    Fa = fflayer(shared_params, input_emb, options,
+                                prefix='F_func',
+                                act_func='relu') # T x bt_sz x n_dim
+    e = T.batched_dot(Fa.dimshuffle((1,0,2)) , Fb.dimshuffle((0,2,1) ) ) # bt x T x num_regions
+
+    alpha = T.nnet.softmax(e) # bt x T x num_regions 
+    beta = T.nnet.softmax(e.dimshuffle((0,2,1))).dimshuffle((0,2,1)) # bt x T x num_regions
     
-    ## Geting Attention weighted representation of the Question
-    # Question : h_from_lstm -> T, BatchSize, n_dim
-    # Image Rep : r ->  BatchSize, n_dim
 
-    CO_W_r = shared_params['CO_w_r'] # n_dim x n_dim
-    CO_W_h = shared_params['CO_w_h'] # n_dim x n_dim
-    CO_W_m = shared_params['CO_w_m'] # n_dim x n_dim
 
-    _CO_Wr = T.dot(r, CO_W_r) # bt_sz x n_dim
-    _CO_Wh = T.dot(h_from_lstm, CO_W_h) # T x bt_sz x n_dim
-    _CO_M = tanh(_CO_Wh + _CO_Wr[None,:,:]) # T x bt_sz x n_dim        
+
+
+
+
     
-    _CO_WM = T.dot(_CO_M, CO_W_m).flatten(2).T # bt_sz x T
-    _CO_alpha = T.nnet.softmax(_CO_WM) # bt_sz x T
-    _CO_alpha = _CO_alpha.dimshuffle((0,'x',1)) # bt_sz x 1 x T
-    _CO_H = T.batched_dot(_CO_alpha, h_from_lstm)[:,0,:] # bt_sz x n_dim
-
     ## Final Dense
     h_star = T.tanh( T.dot(r, shared_params['W_p_w']) + T.dot(_CO_H, shared_params['W_x_w'] ) )
     combined_hidden = fflayer(shared_params, h_star, options,
