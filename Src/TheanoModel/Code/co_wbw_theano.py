@@ -432,7 +432,7 @@ def build_model(shared_params, options):
     _CO_WM = T.dot(_CO_M, CO_W_m).flatten(2).T # bt_sz x T
     _CO_alpha = T.nnet.softmax(_CO_WM) # bt_sz x T
     _CO_alpha = _CO_alpha.dimshuffle((0,'x',1)) # bt_sz x 1 x T
-    _CO_H = T.batched_dot(_CO_alpha, h_from_lstm)[:,0,:] # bt_sz x n_dim
+    _CO_H = T.batched_dot(_CO_alpha, h_from_lstm.dimshuffle((1,0,2)))[:,0,:] # bt_sz x n_dim
 
     ## Final Dense
     h_star = T.tanh( T.dot(r, shared_params['W_p_w']) + T.dot(_CO_H, shared_params['W_x_w'] ) )
