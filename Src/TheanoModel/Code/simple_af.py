@@ -9,7 +9,7 @@ import argparse
 import math
 
 from optimization_weight import *
-from co_wbw_theano import *
+from simple_af_theano import *
 from data_provision_att_vqa import *
 from data_processing_vqa import *
 from configurations import get_configurations

@@ -58,7 +58,7 @@ def init_weight(n, d, options, activation='tanh'):
     options['init_type'] determines
     gaussian or uniform initlizaiton
     '''
-    if options['init_type'] == 'gaussian':
+    if options['init_type'] == 'gaussian' or activation == 'relu':
         return (numpy.random.randn(n, d).astype(floatX)) * options['std']
     elif options['init_type'] == 'uniform':
         # [-range, range]
@@ -100,23 +100,18 @@ def init_params(options):
     # params['w_emb'] = ((numpy.random.rand(n_words, n_emb) * 2 - 1) * 0.5).astype(floatX)
     embedding_matrix = pkl.load(open(options['embedding_file'], 'r'))[1:].astype(floatX)
     params['w_emb'] = embedding_matrix
+
     params = init_fflayer(params, n_image_feat, n_dim, options,
                           prefix='image_mlp')
 
-    # attention model based parameters
-    params['W_p_w'] = init_weight(n_dim, n_dim, options)
-    params['W_x_w'] = init_weight(n_dim, n_dim, options)
-    params = init_fflayer(params, n_dim, n_output, options,
-                          prefix='scale_to_softmax')
-    # lstm layer
-    params = init_lstm_layer(params, n_emb, n_dim, options, prefix='sent_lstm')
-    # wbw attention layer
-    params = init_wbw_att_layer(params, n_dim, n_dim, options)
+    params = init_fflayer(params, n_dim, n_dim, options,
+                          prefix='F_func', activation='relu')
 
-    # Co Attention Layer
-    params['CO_w_r'] = init_weight(n_dim,n_dim,options)
-    params['CO_w_h'] = init_weight(n_dim,n_dim,options)
-    params['CO_w_m'] = init_weight(n_dim,1,options)
+    params = init_fflayer(params, 2*n_dim, 2*n_dim, options,
+                          prefix='G_func', activation='relu')
+
+    params = init_fflayer(params, 4*n_dim, n_output, options,
+                          prefix='scale_to_softmax')
 
     return params
 
@@ -144,6 +139,8 @@ def init_fflayer(params, nin, nout, options, prefix='ff', activation='tanh'):
     '''
     params[prefix + '_w'] = init_weight(nin, nout, options,activation)
     params[prefix + '_b'] = np.zeros(nout, dtype='float32')
+    if activation == 'relu':
+        params[prefix + '_b'] = np.ones(nout, dtype='float32')
     return params
 
 def fflayer(shared_params, x, options, prefix='ff', act_func='tanh'):
@@ -164,215 +161,16 @@ def dropout_layer(x, dropout, trng, drop_ratio=0.5):
                       x)
     return x_drop
 
-def init_lstm_layer(params, nin, ndim, options, prefix='lstm'):
-    ''' initializt lstm layer
-    '''
-    params[prefix + '_w_x'] = np.concatenate( [init_weight(nin, ndim, options, activation='sigmoid'),
-                                              init_weight(nin, ndim, options, activation='sigmoid'),
-                                              init_weight(nin, ndim, options, activation='sigmoid'),
-                                              init_weight(nin, ndim, options, activation='tanh')], axis = 1)
-    # use svd trick to initializ
-    if options['init_lstm_svd']:
-        params[prefix + '_w_h'] = np.concatenate([ortho_weight(ndim),
-                                                  ortho_weight(ndim),
-                                                  ortho_weight(ndim),
-                                                  ortho_weight(ndim)],
-                                                 axis=1)
-    else:
-        params[prefix + '_w_h'] = init_weight(ndim, 4 * ndim, options)
-    params[prefix + '_b_h'] = np.zeros(4 * ndim, dtype='float32')
-    # set forget bias to be positive
-    params[prefix + '_b_h'][ndim : 2*ndim] = np.float32(options.get('forget_bias', 0))
-    return params
-
-def init_wbw_att_layer(params, nin, ndim, options, prefix='wbw_attention'):
-    '''
-        initialize Word by Word layer
-    '''
-    params[prefix + '_w_y'] = init_weight(ndim,ndim,options)
-    params[prefix + '_w_h'] = init_weight(ndim,ndim,options)
-    params[prefix + '_w_r'] = init_weight(ndim,ndim,options)
-    params[prefix + '_w_alpha'] = init_weight(ndim,1,options)
-    params[prefix + '_w_t'] = init_weight(ndim,ndim,options)
-    return params
-
-def wbw_attention_layer(shared_params, image, question, mask, r_0, options, prefix='wbw_attention',return_final=False):
-    ''' wbw attention layer:
-    :param shared_params: shared parameters
-    :param image: batch_size x num_regions x n_dim
-    :param question : T x batch_size x n_dim
-    :param r_0 : batch_size x n_dim 
-    :param mask: mask for x, T x batch_size
-    '''
-    
-    wbw_w_y = shared_params[prefix + '_w_y'] # n_dim x n_dim
-    wbw_w_h = shared_params[prefix + '_w_h'] # n_dim x n_dim
-    wbw_w_r = shared_params[prefix + '_w_r'] # n_dim x n_dim
-    wbw_w_alpha = shared_params[prefix + '_w_alpha'] # n_dim x 1
-    wbw_w_t = shared_params[prefix + '_w_t'] # n_dim x n_dim    
-    
-    def recurrent(h_t, mask_t, r_tm1, Y):
-        # h_t : bt_sz x n_dim
-        wht = T.dot(h_t, wbw_w_h) # bt_sz x n_dim
-        # r_tm1 : bt_sz x n_dim
-        wrtm1 = T.dot(r_tm1, wbw_w_r) # bt_sz x n_dim
-        tmp = (wht + wrtm1)[:,None,:] # bt_sz x num_regions x n_dim
-        WY = T.dot(Y, wbw_w_y) # bt_sz x num_regions x n_dim
-        Mt = tanh(WY + tmp) # bt_sz x num_regions x n_dim         
-        
-        WMt = T.dot(Mt, wbw_w_alpha).flatten(2) # bt_sz x num_regions
-        alpha_ret_t = T.nnet.softmax(WMt) # bt_sz x num_region
-        alpha_t = alpha_ret_t.dimshuffle((0,'x',1)) # bt_sz x 1 x num_region
-        Y_alpha_t = T.batched_dot(alpha_t, Y)[:,0,:] # bt_sz x n_dim
-        r_t = Y_alpha_t + T.dot(r_tm1, wbw_w_t) # bt_sz x n_dim        
-        
-        r_t = mask_t[:, None] * r_t + (numpy.float32(1.0) - mask_t[:, None]) * r_tm1
-        return r_t,alpha_ret_t
-
-    [r,alpha], updates = theano.scan(fn = recurrent,
-                                  sequences = [question, mask],
-                                  non_sequences=[image],
-                                  outputs_info = [r_0[:question.shape[1]],None ],
-                                  n_steps = question.shape[0]
-                                  )
-    if return_final:
-        return r[-1], alpha[-1]
-    return r,alpha
-
-def lstm_layer(shared_params, x, mask, h_0, c_0, options, prefix='lstm'):
-    ''' lstm layer:
-    :param shared_params: shared parameters
-    :param x: input, T x batch_size x n_emb
-    :param mask: mask for x, T x batch_size
-    '''
-    # batch_size = optins['batch_size']
-    n_dim = options['n_dim']
-    # weight matrix for x, n_emb x 4*n_dim (ifoc)
-    lstm_w_x = shared_params[prefix + '_w_x']
-    # weight matrix for h, n_dim x 4*n_dim
-    lstm_w_h = shared_params[prefix + '_w_h']
-    lstm_b_h = shared_params[prefix + '_b_h']
-
-    def recurrent(x_t, mask_t, h_tm1, c_tm1):
-        ifoc = T.dot(x_t, lstm_w_x) + T.dot(h_tm1, lstm_w_h) + lstm_b_h
-        # 0:3*n_dim: input forget and output gate
-        i_gate = T.nnet.sigmoid(ifoc[:, 0 : n_dim])
-        f_gate = T.nnet.sigmoid(ifoc[:, n_dim : 2*n_dim])
-        o_gate = T.nnet.sigmoid(ifoc[:, 2*n_dim : 3*n_dim])
-        # 3*n_dim : 4*n_dim c_temp
-        c_temp = T.tanh(ifoc[:, 3*n_dim : 4*n_dim])
-        # c_t = input_gate * c_temp + forget_gate * c_tm1
-        c_t = i_gate * c_temp + f_gate * c_tm1
-
-        if options['use_tanh']:
-            h_t = o_gate * T.tanh(c_t)
-        else:
-            h_t = o_gate * c_t
-
-        # if mask = 0, then keep the previous c and h
-        h_t = mask_t[:, None] * h_t + \
-              (numpy.float32(1.0) - mask_t[:, None]) * h_tm1
-        c_t = mask_t[:, None] * c_t + \
-              (numpy.float32(1.0) - mask_t[:, None]) * c_tm1
-
-        return h_t, c_t
-
-    [h, c], updates = theano.scan(fn = recurrent,
-                                  sequences = [x, mask],
-                                  outputs_info = [h_0[:x.shape[1]],
-                                                  c_0[:x.shape[1]]],
-                                  n_steps = x.shape[0])
-    return h, c
-
-def lstm_append_layer_fast(shared_params, x, mask, h_0, c_0, options,
-                           prefix='lstm'):
-    ''' lstm append layer fast: the h_0 and c_0 is not updated during computation
-    :param shared_params: shared parameters
-    :param x: input, T x batch_size x n_emb
-    :param mask: mask for x, T x batch_size
-    '''
-    n_dim = options['n_dim']
-    # weight matrix for x, n_emb x 4*n_dim (ifoc)
-    lstm_w_x = shared_params[prefix + '_w_x']
-    # weight matrix for h, n_dim x 4*n_dim
-    lstm_w_h = shared_params[prefix + '_w_h']
-    lstm_b_h = shared_params[prefix + '_b_h']
-    # T x batch_size x dim
-    ifoc = T.dot(x, lstm_w_x) + T.dot(h_0, lstm_w_h) + lstm_b_h
-    # 0:3*n_dim: input forget and output gate
-    i_gate = T.nnet.sigmoid(ifoc[:, :, 0 : n_dim])
-    f_gate = T.nnet.sigmoid(ifoc[:, :, n_dim : 2*n_dim])
-    o_gate = T.nnet.sigmoid(ifoc[:, :, 2*n_dim : 3*n_dim])
-    # 3*n_dim : 4*n_dim c_temp
-    c_temp = T.tanh(ifoc[:, :, 3*n_dim : 4*n_dim])
-    # c_t = input_gate * c_temp + forget_gate * c_tm1
-    c_t = i_gate * c_temp + f_gate * c_0
-
-    if options['use_tanh']:
-        h_t = o_gate * T.tanh(c_t)
-    else:
-        h_t = o_gate * c_t
-
-    return h_t, c_t
-
-
-
-def lstm_append_layer(shared_params, x, mask, h_0, c_0, options, prefix='lstm'):
-    ''' lstm append layer: the h_0 and c_0 is not updated during computation
-    :param shared_params: shared parameters
-    :param x: input, T x batch_size x n_emb
-    :param mask: mask for x, T x batch_size
-    '''
-    n_dim = options['n_dim']
-    # weight matrix for x, n_emb x 4*n_dim (ifoc)
-    lstm_w_x = shared_params[prefix + '_w_x']
-    # weight matrix for h, n_dim x 4*n_dim
-    lstm_w_h = shared_params[prefix + '_w_h']
-    lstm_b_h = shared_params[prefix + '_b_h']
-
-    def recurrent(x_t, mask_t, h_0, c_0):
-        ifoc = T.dot(x_t, lstm_w_x) + T.dot(h_0, lstm_w_h) + lstm_b_h
-        # 0:3*n_dim: input forget and output gate
-        i_gate = T.nnet.sigmoid(ifoc[:, 0 : n_dim])
-        f_gate = T.nnet.sigmoid(ifoc[:, n_dim : 2*n_dim])
-        o_gate = T.nnet.sigmoid(ifoc[:, 2*n_dim : 3*n_dim])
-        # 3*n_dim : 4*n_dim c_temp
-        c_temp = T.tanh(ifoc[:, 3*n_dim : 4*n_dim])
-        # c_t = input_gate * c_temp + forget_gate * c_tm1
-        c_t = i_gate * c_temp + f_gate * c_0
-
-        if options['use_tanh']:
-            h_t = o_gate * T.tanh(c_t)
-        else:
-            h_t = o_gate * c_t
-
-        # if mask = 0, then keep the previous c and h
-        h_t = mask_t[:, None] * h_t + \
-              (numpy.float32(1.0) - mask_t[:, None]) * h_0
-        c_t = mask_t[:, None] * c_t + \
-              (numpy.float32(1.0) - mask_t[:, None]) * c_0
-
-        return h_t, c_t
-
-    [h, c], updates = theano.scan(fn = recurrent,
-                                  sequences = [x, mask],
-                                  outputs_info = None,
-                                  non_sequences = [h_0[:x.shape[1]], c_0[:x.shape[1]]],
-                                  n_steps = x.shape[0])
-    return h, c
-
-def similarity_layer(feat, feat_seq):
-    def _step(x, y):
-        return T.sum(x*y, axis=1) / (T.sqrt(T.sum(x*x, axis=1) * \
-                                            T.sum(y*y, axis=1))
-                                     + np.float(1e-7))
-    similarity, updates = theano.scan(fn = _step,
-                                      sequences = [feat_seq],
-                                      outputs_info = None,
-                                      non_sequences = [feat],
-                                      n_steps = feat_seq.shape[0])
-    return similarity
-
+def batchedSoftmax(x, axis=1):
+    if axis == 1:
+        x = x.dimshuffle((0,2,1))
+    init_shape = x.shape
+    x = x.reshape((init_shape[0]*init_shape[1], init_shape[2]))
+    x = T.nnet.softmax(x)
+    x = x.reshape(init_shape)
+    if axis == 1:
+        x = x.dimshuffle((0,2,1))
+    return x   
 
 def build_model(shared_params, options):
     trng = RandomStreams(1234)
@@ -395,34 +193,48 @@ def build_model(shared_params, options):
                                name='empty_word')
     w_emb_extend = T.concatenate([empty_word, shared_params['w_emb']],
                                  axis=0)
-    input_emb = w_emb_extend[input_idx] # T x bt_sz x n_dim
-    Y = fflayer(shared_params, image_feat, options,
+
+
+    a = w_emb_extend[input_idx] # T x bt_sz x n_dim
+    b = fflayer(shared_params, image_feat, options,
                               prefix='image_mlp',
                               act_func=options.get('image_mlp_act',
                                                    'tanh')) # bt_sz x num_regions x n_dim
-    Fb = fflayer(shared_params, Y, options, 
+    Fb = fflayer(shared_params, b, options, 
                               prefix='F_func', 
                               act_func='relu') # bt x num_region x n_dim
-    Fa = fflayer(shared_params, input_emb, options,
+    Fa = fflayer(shared_params, a, options,
                                 prefix='F_func',
                                 act_func='relu') # T x bt_sz x n_dim
     e = T.batched_dot(Fa.dimshuffle((1,0,2)) , Fb.dimshuffle((0,2,1) ) ) # bt x T x num_regions
 
-    alpha = T.nnet.softmax(e) # bt x T x num_regions 
-    beta = T.nnet.softmax(e.dimshuffle((0,2,1))).dimshuffle((0,2,1)) # bt x T x num_regions
-    
+    alpha = batchedSoftmax(e,1) # bt x T x num_regions 
+    beta = batchedSoftmax(e,2) # bt x T x num_regions
 
 
+    alpha = T.batched_dot(alpha.dimshuffle((0,2,1)), a.dimshuffle((1,0,2))) # bt x num_regions x ndim
+    beta = T.batched_dot(beta, b) # bt x T x ndim
+
+    a_beta = T.concatenate([a.dimshuffle((1,0,2)), beta], axis=2) # bt x T x 2*ndim
+    b_alpha = T.concatenate([b, alpha], axis=2) # bt x num_regions x 2*ndim
 
 
+    G_a_beta = fflayer(shared_params, a_beta, options,
+                                prefix='G_func',
+                                act_func='tanh') # bt x T x 2*ndim
+    G_b_alpha = fflayer(shared_params, b_alpha, options, 
+                              prefix='G_func', 
+                              act_func='tanh') # bt x num_regions x 2*ndim
 
+    V1 = T.sum(G_a_beta, axis=1) # bt x 2*ndim
+    V2 = T.sum(G_b_alpha, axis=1) # bt x 2*ndim
 
-    
+    h_star = T.concatenate([V1, V2], axis=1) # bt x 4*dim
+
     ## Final Dense
-    h_star = T.tanh( T.dot(r, shared_params['W_p_w']) + T.dot(_CO_H, shared_params['W_x_w'] ) )
     combined_hidden = fflayer(shared_params, h_star, options,
                                 prefix='scale_to_softmax',
-                                act_func='linear')
+                                act_func='tanh')
 
     # drop the image output
     prob = T.nnet.softmax(combined_hidden)
